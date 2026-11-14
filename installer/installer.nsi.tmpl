@@ -1,0 +1,67 @@
+; MD 변환기 설치 프로그램 (NSIS 3, 현재 사용자 설치 — 관리자 권한 불필요)
+Unicode true
+!define APPNAME "MD 변환기"
+!define APPID "MDConverter"
+!define VERSION "@VERSION@"
+!define EXE "md-converter.exe"
+Name "${APPNAME}"
+OutFile "@OUT@"
+InstallDir "$LOCALAPPDATA\Programs\${APPID}"
+InstallDirRegKey HKCU "Software\${APPID}" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+BrandingText "${APPNAME} ${VERSION}"
+
+!include "MUI2.nsh"
+!define MUI_ICON "app.ico"
+!define MUI_UNICON "app.ico"
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "${APPNAME} 지금 실행"
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "Korean"
+!insertmacro MUI_LANGUAGE "English"
+
+VIProductVersion "@VERSION@.0"
+VIAddVersionKey /LANG=${LANG_KOREAN} "ProductName" "${APPNAME}"
+VIAddVersionKey /LANG=${LANG_KOREAN} "FileDescription" "${APPNAME} 설치 프로그램"
+VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=${LANG_KOREAN} "LegalCopyright" ""
+
+Section "Install"
+  SetOutPath "$INSTDIR"
+  ; 실행 중이면 덮어쓸 수 없으므로 종료 신호를 보내 둠
+  File "${EXE}"
+  File "app.ico"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\${APPNAME}"
+  CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\app.ico"
+  CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME} 제거.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\app.ico"
+  WriteRegStr HKCU "Software\${APPID}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "DisplayName" "${APPNAME}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "DisplayIcon" "$INSTDIR\app.ico"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "InstallLocation" "$INSTDIR"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}" "NoRepair" 1
+SectionEnd
+
+Section "Uninstall"
+  Delete "$INSTDIR\${EXE}"
+  Delete "$INSTDIR\app.ico"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir "$INSTDIR"
+  Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\${APPNAME} 제거.lnk"
+  RMDir "$SMPROGRAMS\${APPNAME}"
+  Delete "$DESKTOP\${APPNAME}.lnk"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPID}"
+  DeleteRegKey HKCU "Software\${APPID}"
+SectionEnd
