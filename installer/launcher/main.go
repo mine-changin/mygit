@@ -39,6 +39,15 @@ func main() {
 		lastPing.Store(time.Now().Unix())
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// 설치/제거 프로그램이 실행 중인 앱을 정상 종료시키기 위한 요청 (127.0.0.1 전용)
+	mux.HandleFunc("/__quit", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("k") != "mdc-installer" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		go func() { time.Sleep(200 * time.Millisecond); os.Exit(0) }()
+	})
 	mux.HandleFunc("/__bye", func(w http.ResponseWriter, r *http.Request) {
 		byeAt.Store(time.Now().Unix())
 		w.WriteHeader(http.StatusNoContent)
