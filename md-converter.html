@@ -105,11 +105,13 @@ textarea:focus{outline:none}
     <section class="panel" aria-label="변환 결과">
       <div class="bar">
         <div class="title" id="curName">결과 미리보기</div>
+        <button class="b" id="btnRecheck" disabled>다시 검증</button>
         <button class="b" id="btnCopy" disabled>복사</button>
         <button class="b pri" id="btnSave" disabled>.md 저장</button>
       </div>
       <div class="report" id="report" hidden></div>
       <textarea id="out" spellcheck="false" placeholder="변환된 마크다운이 여기에 표시됩니다. 직접 수정도 가능합니다." disabled></textarea>
+      <div class="report" id="final" hidden></div>
       <div class="foot">
         <span class="note" id="summary">0개 파일</span>
         <button class="b" id="btnMerge" disabled>하나로 합쳐 저장</button>
@@ -416,6 +418,7 @@ function render(){
   renderReport();
   var okOut=!!c&&c.state==='ok'&&c.report&&(c.report.verdict!=='fail'||c.override);
   $('btnCopy').disabled=$('btnSave').disabled=!okOut;
+  $('btnRecheck').disabled=!c||c.state!=='ok';
   var allOk=ok.length>0&&ok.every(function(i){return i.report.verdict!=='fail'||i.override});
   $('btnMerge').disabled=$('btnZip').disabled=!allOk;
   var cnt={pass:0,warn:0,fail:0};ok.forEach(function(i){cnt[i.report.verdict]++});
@@ -441,7 +444,7 @@ function renderReport(){
   if(r.verdict==='fail'){
     var lb=document.createElement('label');lb.htmlFor='ovr';
     var cb=document.createElement('input');cb.type='checkbox';cb.id='ovr';cb.checked=!!c.override;
-    cb.onchange=function(){c.override=cb.checked;render()};
+    cb.onchange=function(){c.override=cb.checked;closeFinal();render()};
     lb.append(cb,document.createTextNode('누락을 확인했고, 그래도 출력합니다'));
     box.appendChild(lb);
   }
@@ -449,7 +452,7 @@ function renderReport(){
 var vt=null;
 $('out').addEventListener('input',function(){
   var c=current();if(!c||c.state!=='ok')return;
-  c.md=this.value;clearTimeout(vt);
+  c.md=this.value;closeFinal();clearTimeout(vt);
   vt=setTimeout(function(){verify(c);render()},400);
 });
 
@@ -495,20 +498,81 @@ function reportMd(list){
   }).join('\n');
 }
 $('btnCopy').onclick=function(){var c=current();if(c&&gate([c]))copy(c.md)};
-$('btnSave').onclick=function(){var c=current();if(c&&gate([c]))save(c.name,c.md)};
+$('btnSave').onclick=function(){var c=current();if(c)finalCheck([c],function(){save(c.name,c.md)})};
+$('btnRecheck').onclick=function(){var c=current();if(c)finalCheck([c],null)};
 $('btnMerge').onclick=function(){
   var ok=items.filter(function(i){return i.state==='ok'});
-  if(!gate(ok))return;
-  save('merged.md',ok.map(function(i){return '# '+i.file.name+'\n\n'+i.md.trim()}).join('\n\n---\n\n')+'\n');
+  finalCheck(ok,function(){save('merged.md',ok.map(function(i){return '# '+i.file.name+'\n\n'+i.md.trim()}).join('\n\n---\n\n')+'\n')});
 };
-$('btnZip').onclick=async function(){
+$('btnZip').onclick=function(){
   if(!window.JSZip)return toast('ZIP 라이브러리를 불러오지 못했습니다.');
-  var ok=items.filter(function(i){return i.state==='ok'}), z=new JSZip(), names=uniq(ok.map(function(i){return i.name}));
-  if(!gate(ok))return;
-  ok.forEach(function(it,i){z.file(names[i],it.md)});
-  z.file('_검증보고서.md',reportMd(ok));
-  save('markdown-files.zip',await z.generateAsync({type:'blob'}));
+  var ok=items.filter(function(i){return i.state==='ok'});
+  finalCheck(ok,async function(){
+    var z=new JSZip(), names=uniq(ok.map(function(i){return i.name}));
+    ok.forEach(function(it,i){z.file(names[i],it.md)});
+    z.file('_검증보고서.md',reportMd(ok));
+    save('markdown-files.zip',await z.generateAsync({type:'blob'}));
+  });
 };
+
+/* ---- 다운로드 전 최종 검증: 원본을 처음부터 다시 변환해 대조하고, 결과 형식과 저장 무결성을 점검 ---- */
+var finalBusy=false;
+function closeFinal(){var f=$('final');f.hidden=true;f.textContent=''}
+function formatChecks(md){
+  var out=[];
+  var fences=md.split('\n').filter(function(l){return /^\s*(`{3,}|~{3,})/.test(l)}).length;
+  if(fences%2)out.push({l:'warn',m:'코드블록(```) 열고 닫는 줄 수가 맞지 않습니다.'});
+  var rows=md.split('\n'),i=0,bad=0;
+  while(i<rows.length){
+    if(/^\|.*\|\s*$/.test(rows[i])){var n=rows[i].replace(/\\\|/g,'').split('|').length,j=i;
+      while(j<rows.length&&/^\|.*\|\s*$/.test(rows[j])){if(rows[j].replace(/\\\|/g,'').split('|').length!==n)bad++;j++}
+      i=j}else i++;
+  }
+  if(bad)out.push({l:'warn',m:'열 수가 맞지 않는 표 행이 '+bad+'개 있습니다.'});
+  if(new TextDecoder().decode(new TextEncoder().encode(md))!==md)out.push({l:'fail',m:'UTF-8 저장 검사에서 글자가 바뀝니다.'});
+  else out.push({l:'ok',m:'저장 시 글자 보존(UTF-8) 확인, 크기 '+fmtSize(new TextEncoder().encode(md).length)});
+  return out;
+}
+async function finalCheck(list,action){
+  finalBusy=true;var box=$('final');box.hidden=false;box.textContent='';
+  var h=document.createElement('div');h.className='rhead';var b=document.createElement('b');b.textContent='다운로드 전 최종 검증 중...';h.appendChild(b);box.appendChild(h);
+  var all='pass',blocks=[],needOverride=[];
+  for(var k=0;k<list.length;k++){
+    var it=list[k], lines=[], v='pass';
+    function add(l,m){lines.push({l:l,m:m});if(l==='fail')v='fail';else if(l==='warn'&&v==='pass')v='warn'}
+    try{
+      var fr=await convert(it.file), tmp={md:fr.md,srcTok:tokens(fr.src),notes:fr.notes,expectText:fr.expectText,recovered:0};
+      recover(tmp,fr);var r1=verify(tmp);
+      if(r1.verdict==='fail')add('fail','원본을 처음부터 다시 변환한 결과도 검증에 실패했습니다.');
+      else add('ok','원본 재변환 검증: '+(r1.verdict==='pass'?'통과 (누락 0)':'주의 수준'));
+      if(tmp.md===it.md)add('ok','재변환 결과와 현재 결과가 완전히 같습니다 (변환이 일관됨).');
+      else add('info','직접 수정했거나 재변환과 다른 내용이 있습니다. 현재 편집본을 기준으로 검증합니다.');
+    }catch(e){add('fail','원본 재변환 실패: '+((e&&e.message)||e))}
+    var r2=verify(it);
+    r2.lines.forEach(function(x){if(x.l==='fail'||x.l==='warn')add(x.l,'현재 결과: '+x.m)});
+    if(r2.verdict==='pass')add('ok','현재 결과 검증: 원본 단어 '+it.srcTok.length.toLocaleString()+'개 모두 포함');
+    formatChecks(it.md).forEach(function(x){add(x.l,x.m)});
+    if(v==='fail'&&!it.override)blocks.push(it.file.name);
+    if(v==='fail')needOverride.push(it);
+    if(v==='fail')all='fail';else if(v==='warn'&&all==='pass')all='warn';
+    var hd=document.createElement('div');hd.className='rhead';
+    var pill=document.createElement('span');pill.className='st '+(v==='pass'?'ok':v==='warn'?'warn':'err');pill.textContent=v==='pass'?'통과':v==='warn'?'주의':'실패';
+    var nm=document.createElement('b');nm.textContent=it.file.name;hd.append(pill,nm);box.appendChild(hd);
+    var ul=document.createElement('ul');
+    lines.forEach(function(x){var li=document.createElement('li');li.className=x.l;var mk=document.createElement('span');mk.className='mk';mk.textContent=x.l==='ok'?'✓':x.l==='warn'?'!':x.l==='fail'?'✕':'i';var t=document.createElement('span');t.textContent=x.m;li.append(mk,t);ul.appendChild(li)});
+    box.appendChild(ul);
+  }
+  b.textContent=all==='pass'?'최종 검증 통과':all==='warn'?'최종 검증: 주의 항목 있음':'최종 검증 실패';
+  var row=document.createElement('div');row.className='rhead';
+  if(action){
+    var go=document.createElement('button');go.className='b pri';go.textContent='다운로드 진행';go.disabled=blocks.length>0;
+    go.onclick=function(){closeFinal();finalBusy=false;action()};row.appendChild(go);
+    if(blocks.length){var m=document.createElement('span');m.textContent='실패 항목은 위 결과의 "누락을 확인했고, 그래도 출력합니다"를 체크해야 진행할 수 있습니다.';m.style.color='var(--err)';row.appendChild(m)}
+  }
+  var cl=document.createElement('button');cl.className='b';cl.textContent='닫기';cl.onclick=function(){finalBusy=false;closeFinal()};row.appendChild(cl);
+  box.appendChild(row);
+  finalBusy=false;render();
+}
 render();
 })();
 </script>
