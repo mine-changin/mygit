@@ -205,7 +205,11 @@ async function convert(file){
   if(e==='docx')return docx(buf);
   if(e==='pptx')return pptx(buf);
   if(e==='hwpx')return hwpx(buf);
-  if(e==='xlsx'||e==='xls'||e==='xlsm'||e==='ods')return xlsx(buf);
+  if(e==='xlsx'||e==='xls'||e==='xlsm'||e==='ods'){
+    var h=new Uint8Array(buf.slice(0,4)), zip=h[0]===0x50&&h[1]===0x4B, ole=h[0]===0xD0&&h[1]===0xCF;
+    if(!(zip||(e==='xls'&&ole)))throw new Error('엑셀 파일 형식이 아닙니다. 확장자와 실제 형식이 다르거나 파일이 손상되었습니다.');
+    return xlsx(buf);
+  }
   if(e==='doc'||e==='ppt'||e==='hwp')throw new Error('구형 바이너리 형식입니다. .docx / .pptx / .hwpx 로 저장 후 다시 시도하세요.');
   var u8=new Uint8Array(buf.slice(0,4096));
   if(u8.indexOf(0)>=0&&!(u8[0]===0xFF&&u8[1]===0xFE))throw new Error('지원하지 않는 바이너리 형식입니다.');
@@ -358,7 +362,7 @@ function verify(it){
   var r={verdict:'pass',lines:[]};
   function add(l,m){r.lines.push({l:l,m:m});if(l==='fail')r.verdict='fail';else if(l==='warn'&&r.verdict==='pass')r.verdict='warn'}
   var N=it.srcTok.length, miss=missingTokens(it.srcTok,it.md), M=miss.length;
-  if(!it.md.trim()&&it.expectText)add('fail','변환 결과가 비어 있습니다.');
+  if(!it.md.trim()&&it.expectText)add(N?'fail':'warn',N?'변환 결과가 비어 있습니다.':'원본에 텍스트가 없고 결과도 비어 있습니다 (빈 파일).');
   else if(!N&&it.expectText)add('warn','원본에서 추출된 텍스트가 없습니다. 내용이 이미지일 수 있습니다.');
   else if(N){
     if(!M)add('ok','원본 단어 '+N.toLocaleString()+'개가 결과에 모두 포함되어 있습니다 (누락 0).');
@@ -484,6 +488,10 @@ function copy(text){
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(function(){toast('복사했습니다')},fallback);
   else fallback();
 }
+function outNames(list){
+  var cnt={};list.forEach(function(i){var b=base(i.file.name);cnt[b]=(cnt[b]||0)+1});
+  return uniq(list.map(function(i){var b=base(i.file.name);return cnt[b]>1?b+'_'+ext(i.file.name)+'.md':i.name}));
+}
 function uniq(names){var seen={};return names.map(function(n){var k=n,i=1;while(seen[k]){k=n.replace(/\.md$/,'')+'_'+(++i)+'.md'}seen[k]=1;return k})}
 function gate(list){
   var bad=list.filter(function(i){return !canOutput(i)});
@@ -515,7 +523,7 @@ $('btnZip').onclick=function(){
   var ok=items.filter(function(i){return i.state==='ok'});
   if(items.some(function(i){return i.state==='run'}))return toast('변환 중인 파일이 있습니다. 끝난 뒤 다시 시도하세요.');
   finalCheck(ok,async function(){
-    var z=new JSZip(), names=uniq(ok.map(function(i){return i.name}));
+    var z=new JSZip(), names=outNames(ok);
     ok.forEach(function(it,i){z.file(names[i],it.md)});
     z.file('_검증보고서.md',reportMd(ok)+skippedMd());
     save('markdown-files.zip',await z.generateAsync({type:'blob'}));
