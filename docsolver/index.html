@@ -19,7 +19,7 @@ h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 16px}
 .row{display:flex;gap:8px}input[type=text]{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--tx);font-size:15px}
 button.p{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:0 18px;font-size:15px;cursor:pointer}
 button.s{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer}
-label.ai{font-size:13px;color:var(--mute);display:flex;gap:4px;align-items:center;margin-top:8px}
+.ai{font-size:13px;color:var(--mute);display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.ai input[type=password]{padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--tx);width:280px;max-width:100%}.ans h4{margin:10px 0 4px}.ans ul,.ans ol{margin:4px 0;padding-left:22px}.ans pre{margin:6px 0}
 h2{font-size:16px;margin:20px 0 8px}
 .badge{display:inline-block;color:#fff;border-radius:4px;font-size:12px;padding:1px 7px;margin-right:6px}
 .high{background:var(--hi)}.medium{background:var(--md)}.low{background:var(--lo)}
@@ -44,7 +44,11 @@ mark{background:var(--mark);color:inherit;border-radius:2px}
 <div class="card">
   <div class="row"><input id="q" type="text" placeholder="증상·에러 메시지·키워드 입력 (비워두고 '전체 점검'을 눌러도 됩니다)">
   <button class="p" id="go">검색</button><button class="s" id="scan">전체 점검</button></div>
-  <label class="ai" id="aiwrap" hidden><input type="checkbox" id="useai"> AI 분석 포함 (ANTHROPIC_API_KEY 사용)</label>
+  <div class="ai">
+    <label><input type="checkbox" id="useai"> 🤖 AI 분석 포함</label>
+    <span id="aikey"><input type="password" id="key" placeholder="Anthropic API 키 (서버 메모리에만 보관)"> <button class="s" id="savekey">적용</button></span>
+    <span class="meta" id="aistate"></span>
+  </div>
 </div>
 <div id="out"></div>
 </div>
@@ -53,6 +57,28 @@ const $=s=>document.querySelector(s);
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt=n=>n>1048576?(n/1048576).toFixed(1)+'MB':n>1024?(n/1024).toFixed(1)+'KB':n+'B';
 let terms=[];
+function setAi(on){
+  $('#aikey').hidden=on; $('#aistate').textContent=on?'AI 사용 가능':'API 키를 입력하면 활성화됩니다';
+  $('#useai').disabled=!on; if(!on)$('#useai').checked=false; else if(!$('#useai').dataset.t){$('#useai').checked=true;$('#useai').dataset.t=1}
+}
+$('#savekey').onclick=async()=>{const r=await(await fetch('/api/config',{method:'POST',body:JSON.stringify({key:$('#key').value})})).json();$('#key').value='';setAi(r.ai)};
+function mdBlock(src){            // 최소 마크다운: 코드블록/제목/목록/굵게/인라인코드
+  const parts=src.split(/```[a-z]*\n?/);
+  return parts.map((p,i)=>{
+    if(i%2) return '<pre>'+esc(p.replace(/\n$/,''))+'</pre>';
+    let o=[],list=null;
+    const close=()=>{if(list){o.push('</'+list+'>');list=null}};
+    for(const l of p.split('\n')){
+      let m;
+      if(m=l.match(/^#{1,4}\s+(.*)/)){close();o.push('<h4>'+inl(m[1])+'</h4>')}
+      else if(m=l.match(/^\s*[-*]\s+(.*)/)){if(list!=='ul'){close();o.push('<ul>');list='ul'}o.push('<li>'+inl(m[1])+'</li>')}
+      else if(m=l.match(/^\s*\d+[.)]\s+(.*)/)){if(list!=='ol'){close();o.push('<ol>');list='ol'}o.push('<li>'+inl(m[1])+'</li>')}
+      else{close();if(l.trim())o.push('<div>'+inl(l)+'</div>')}
+    }
+    close();return o.join('');
+  }).join('');
+}
+function inl(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')}
 function hl(text){
   let h=esc(text);
   const words=terms.filter(t=>/^[a-z0-9_]{2,}$/.test(t)||/^[가-힣]{2}$/.test(t));
@@ -64,7 +90,7 @@ function md(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>')}
 async function loadFiles(){
   const r=await (await fetch('/api/files')).json();
   $('#files').innerHTML=r.files.length?r.files.map(f=>`<span class="chip">📄 ${esc(f.name)} <span class="meta">${fmt(f.size)} · ${f.lines}줄</span> <button data-n="${esc(f.name)}" title="삭제">×</button></span>`).join(''):'<span class="meta">추가된 파일이 없습니다.</span>';
-  $('#aiwrap').hidden=!r.ai;
+  setAi(r.ai);
   document.querySelectorAll('.chip button').forEach(b=>b.onclick=async()=>{await fetch('/api/files?name='+encodeURIComponent(b.dataset.n),{method:'DELETE'});loadFiles()});
   return r.files.length;
 }
@@ -93,8 +119,8 @@ function findingsHtml(fs,title){
   <ol class="sol">${f.solutions.map(s=>`<li>${md(s)}</li>`).join('')}</ol>
   ${f.examples.map(e=>`<div class="ex">📍 ${esc(e.file)}${e.line?':'+e.line:''} — ${esc(e.text)}</div>`).join('')}</div>`).join('');
 }
-const aiHtml=a=>a?`<h2>🤖 AI 분석</h2><div class="card ans">${esc(a)}</div>`:'';
-function busy(){$('#out').innerHTML='<div class="empty">분석 중…</div>'}
+const aiHtml=a=>a?`<h2>🤖 AI 분석</h2><div class="card ans">${mdBlock(a)}</div>`:'';
+function busy(){$('#out').innerHTML='<div class="empty">분석 중… (AI 분석은 수십 초 걸릴 수 있습니다)</div>'}
 
 async function scan(){
   if(!await loadFiles()){ $('#out').innerHTML='<div class="card empty">먼저 파일을 추가하세요.</div>';return}

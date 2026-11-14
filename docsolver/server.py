@@ -162,8 +162,19 @@ def load_existing():
     IDX.rebuild()
 
 # ---------------------------------------------------------------- AI 답변 (선택)
+CFG = {"key": os.environ.get("ANTHROPIC_API_KEY", "")}   # 메모리에만 보관 (디스크 저장 안 함)
+API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/") + "/v1/messages"
+
+def context_of(ex, radius=4):
+    """탐지된 줄 주변 로그를 함께 AI 에 전달."""
+    f = IDX.files.get(ex["file"])
+    if not f or not ex["line"]:
+        return ex["text"]
+    a, b = max(0, ex["line"] - 1 - radius), ex["line"] + radius
+    return "\n".join(f["lines"][a:b])
+
 def ai_answer(query, hits, findings):
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    key = CFG["key"]
     if not key:
         return None
     ctx = "\n\n".join(f"[{h['file']}:{h['start']}-{h['end']}]\n{h['text'][:1500]}" for h in hits[:5])
@@ -174,7 +185,7 @@ def ai_answer(query, hits, findings):
               "발췌에 근거가 없는 내용은 추측임을 밝히세요.")
     body = json.dumps({"model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5"), "max_tokens": 1500,
                        "messages": [{"role": "user", "content": prompt}]}).encode()
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", body, {
+    req = urllib.request.Request(API_URL, body, {
         "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -203,7 +214,7 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b)
         elif u.path == "/api/files":
             self._json({"files": [{"name": n, "size": f["size"], "lines": len(f["lines"])} for n, f in IDX.files.items()],
-                        "ai": bool(os.environ.get("ANTHROPIC_API_KEY"))})
+                        "ai": bool(CFG["key"])})
         elif u.path == "/api/scan":
             self._json({"findings": IDX.scan()})
         else:
@@ -215,6 +226,9 @@ class H(BaseHTTPRequestHandler):
         if n > MAX_BYTES:
             return self._json({"error": "파일이 너무 큽니다 (최대 20MB)"}, 413)
         body = self.rfile.read(n)
+        if u.path == "/api/config":
+            CFG["key"] = (json.loads(body or b"{}").get("key") or "").strip()
+            return self._json({"ok": True, "ai": bool(CFG["key"])})
         if u.path == "/api/upload":
             name = os.path.basename(urllib.parse.unquote(self.headers.get("X-Filename", ""))) or "unnamed.txt"
             try:
@@ -244,9 +258,9 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/ai-scan":
             f = IDX.scan()
             hits = []
-            for x in f[:3]:
+            for x in f[:4]:
                 for ex in x["examples"][:2]:
-                    hits.append({"file": ex["file"], "start": ex["line"], "end": ex["line"], "text": ex["text"]})
+                    hits.append({"file": ex["file"], "start": ex["line"], "end": ex["line"], "text": context_of(ex)})
             return self._json({"ai": ai_answer("", hits, f)})
         self._json({"error": "not found"}, 404)
 
@@ -267,5 +281,5 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     load_existing()
-    print(f"DocSolver: http://localhost:{port}  (파일 {len(IDX.files)}개 로드, AI={'ON' if os.environ.get('ANTHROPIC_API_KEY') else 'OFF'})")
+    print(f"DocSolver: http://localhost:{port}  (파일 {len(IDX.files)}개 로드, AI={'ON' if CFG['key'] else 'OFF'})")
     ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
