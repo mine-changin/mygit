@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DocSolver</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mute:#6a737d;--line:#e1e4e8;--pri:#2563eb;--hi:#dc2626;--md:#d97706;--lo:#16a34a;--mark:#fde68a}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#171c23;--tx:#e6e9ee;--mute:#8b95a1;--line:#2a313b;--pri:#60a5fa;--mark:#6b5b12}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 system-ui,-apple-system,"Noto Sans KR",sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+#drop{border:2px dashed var(--line);text-align:center;padding:26px;cursor:pointer;color:var(--mute)}
+#drop.on{border-color:var(--pri);color:var(--pri)}
+.files{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:13px}
+.chip button{border:0;background:none;color:var(--mute);cursor:pointer;font-size:15px}
+.row{display:flex;gap:8px}input[type=text]{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--tx);font-size:15px}
+button.p{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:0 18px;font-size:15px;cursor:pointer}
+button.s{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer}
+label.ai{font-size:13px;color:var(--mute);display:flex;gap:4px;align-items:center;margin-top:8px}
+h2{font-size:16px;margin:20px 0 8px}
+.badge{display:inline-block;color:#fff;border-radius:4px;font-size:12px;padding:1px 7px;margin-right:6px}
+.high{background:var(--hi)}.medium{background:var(--md)}.low{background:var(--lo)}
+.sol li{margin:3px 0}code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:13px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12.5px;margin:6px 0 0}
+mark{background:var(--mark);color:inherit;border-radius:2px}
+.meta{color:var(--mute);font-size:12.5px}.ex{font-size:12.5px;color:var(--mute);margin:3px 0;word-break:break-all}
+.empty{color:var(--mute);text-align:center;padding:20px}
+.ans{white-space:pre-wrap}
+</style>
+</head>
+<body><div class="wrap">
+<h1>🔎 DocSolver</h1>
+<p class="sub">로그·설정·문서 파일을 추가하면 내용을 검색하고, 문제를 찾아 해결 방법을 제시합니다.</p>
+
+<div class="card">
+  <div id="drop">파일을 여기로 끌어놓거나 클릭하여 추가<br><span class="meta">.log .txt .md .conf .yaml .json .csv .docx .pdf 등 · 여러 개 가능</span></div>
+  <input id="pick" type="file" multiple hidden>
+  <div class="files" id="files"></div>
+</div>
+
+<div class="card">
+  <div class="row"><input id="q" type="text" placeholder="증상·에러 메시지·키워드 입력 (비워두고 '전체 점검'을 눌러도 됩니다)">
+  <button class="p" id="go">검색</button><button class="s" id="scan">전체 점검</button></div>
+  <label class="ai" id="aiwrap" hidden><input type="checkbox" id="useai"> AI 분석 포함 (ANTHROPIC_API_KEY 사용)</label>
+</div>
+<div id="out"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=n=>n>1048576?(n/1048576).toFixed(1)+'MB':n>1024?(n/1024).toFixed(1)+'KB':n+'B';
+let terms=[];
+function hl(text){
+  let h=esc(text);
+  const words=terms.filter(t=>/^[a-z0-9_]{2,}$/.test(t)||/^[가-힣]{2}$/.test(t));
+  if(!words.length) return h;
+  const re=new RegExp('('+words.map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')','gi');
+  return h.replace(re,'<mark>$1</mark>');
+}
+function md(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>')}
+async function loadFiles(){
+  const r=await (await fetch('/api/files')).json();
+  $('#files').innerHTML=r.files.length?r.files.map(f=>`<span class="chip">📄 ${esc(f.name)} <span class="meta">${fmt(f.size)} · ${f.lines}줄</span> <button data-n="${esc(f.name)}" title="삭제">×</button></span>`).join(''):'<span class="meta">추가된 파일이 없습니다.</span>';
+  $('#aiwrap').hidden=!r.ai;
+  document.querySelectorAll('.chip button').forEach(b=>b.onclick=async()=>{await fetch('/api/files?name='+encodeURIComponent(b.dataset.n),{method:'DELETE'});loadFiles()});
+  return r.files.length;
+}
+async function upload(list){
+  const errs=[];
+  for(const f of list){
+    const r=await fetch('/api/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(f.name)},body:f});
+    const j=await r.json(); if(!r.ok) errs.push(j.error);
+  }
+  await loadFiles();
+  if(errs.length) alert(errs.join('\n'));
+  else scan();           // 업로드 후 자동 점검
+}
+const drop=$('#drop');
+drop.onclick=()=>$('#pick').click();
+$('#pick').onchange=e=>upload([...e.target.files]);
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('on')}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('on')}));
+drop.addEventListener('drop',e=>upload([...e.dataTransfer.files]));
+
+function findingsHtml(fs,title){
+  if(!fs.length) return `<h2>${title}</h2><div class="card empty">알려진 문제 패턴이 발견되지 않았습니다.</div>`;
+  return `<h2>${title} (${fs.length})</h2>`+fs.map(f=>`
+  <div class="card"><div><span class="badge ${f.severity}">${f.severity.toUpperCase()}</span><b>${esc(f.title)}</b> <span class="meta">${f.count}건</span></div>
+  <div class="meta" style="margin:4px 0">원인: ${esc(f.cause)}</div>
+  <ol class="sol">${f.solutions.map(s=>`<li>${md(s)}</li>`).join('')}</ol>
+  ${f.examples.map(e=>`<div class="ex">📍 ${esc(e.file)}${e.line?':'+e.line:''} — ${esc(e.text)}</div>`).join('')}</div>`).join('');
+}
+const aiHtml=a=>a?`<h2>🤖 AI 분석</h2><div class="card ans">${esc(a)}</div>`:'';
+function busy(){$('#out').innerHTML='<div class="empty">분석 중…</div>'}
+
+async function scan(){
+  if(!await loadFiles()){ $('#out').innerHTML='<div class="card empty">먼저 파일을 추가하세요.</div>';return}
+  busy(); terms=[];
+  const r=await (await fetch('/api/scan')).json();
+  $('#out').innerHTML=findingsHtml(r.findings,'⚠ 자동 탐지된 문제와 솔루션');
+  if($('#useai').checked){
+    const a=await (await fetch('/api/ai-scan',{method:'POST'})).json();
+    $('#out').insertAdjacentHTML('beforeend',aiHtml(a.ai));
+  }
+}
+async function search(){
+  const q=$('#q').value.trim(); if(!q) return scan();
+  busy();
+  const r=await (await fetch('/api/search',{method:'POST',body:JSON.stringify({q,ai:$('#useai').checked})})).json();
+  terms=r.terms;
+  let h=aiHtml(r.ai)+findingsHtml(r.findings,'💡 관련 솔루션');
+  h+=`<h2>🔎 검색 결과 (${r.hits.length})</h2>`+(r.hits.length?r.hits.map(x=>`
+   <div class="card"><div><b>${esc(x.file)}</b> <span class="meta">${x.start}–${x.end}줄 · 관련도 ${x.score}%</span></div><pre>${hl(x.text)}</pre></div>`).join(''):'<div class="card empty">일치하는 내용이 없습니다.</div>');
+  $('#out').innerHTML=h;
+}
+$('#go').onclick=search; $('#scan').onclick=scan;
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
+loadFiles();
+</script>
+</body></html>
