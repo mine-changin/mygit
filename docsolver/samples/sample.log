@@ -1,0 +1,7 @@
+Nov 14 09:01:11 web01 systemd[1]: Starting nginx...
+Nov 14 09:01:12 web01 nginx[812]: nginx: [emerg] bind() to 0.0.0.0:80 failed (98: Address already in use)
+Nov 14 09:01:12 web01 systemd[1]: nginx.service: Failed to start The nginx HTTP server.
+Nov 14 09:05:40 web01 kernel: Out of memory: Killed process 4411 (java) total-vm:8123456kB
+Nov 14 09:07:01 web01 app[900]: write failed: No space left on device
+Nov 14 09:08:00 web01 kubelet: Back-off restarting failed container app in pod app-7d9
+Nov 14 09:09:00 web01 sshd[33]: 디스크 용량 부족으로 로그 기록 실패
