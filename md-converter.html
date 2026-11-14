@@ -185,7 +185,7 @@ function turndown(){
 /* ---- 변환기: 각 변환기는 {md, src, paras, notes, expectText}를 반환 ----
    src   = 원본에서 별도 경로로 뽑은 전체 텍스트 (검증 기준)
    paras = 원본 단락 목록 (누락 시 말미에 보완 추가) */
-function res(md,src,paras,notes,expectText){return{md:md,src:src||'',paras:paras||[],notes:notes||[],expectText:expectText!==false}}
+function res(md,src,paras,notes,expectText,charMode,pageSrc){return{md:md,src:src||'',paras:paras||[],notes:notes||[],expectText:expectText!==false,charMode:!!charMode,pageSrc:pageSrc||null}}
 function note(l,m){return{l:l,m:m}}
 function xmlDoc(str){return new DOMParser().parseFromString(str,'text/xml')}
 function txt(nodes){return [].map.call(nodes,function(n){return n.textContent}).join('')}
@@ -232,28 +232,32 @@ async function pdf(buf){
   var doc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise, out=[], src=[], paras=[], empty=[], imgs=0, any=false;
   var O=pdfjsLib.OPS||{}, imgOps=[O.paintImageXObject,O.paintInlineImageXObject,O.paintImageMaskXObject,O.paintJpegXObject].filter(function(x){return x!=null});
   for(var p=1;p<=doc.numPages;p++){
-    var page=await doc.getPage(p), tc=await page.getTextContent(), lines=[], y=null, cur='';
+    var page=await doc.getPage(p), tc=await page.getTextContent(), lines=[], prev=null, cur='';
     tc.items.forEach(function(it){
       if(!it.str&&!it.hasEOL)return;
-      var yy=Math.round(it.transform[5]);
-      if(y!==null&&Math.abs(yy-y)>3){lines.push(cur);cur=''}
-      cur+=it.str;y=yy;
+      var h=Math.abs(it.transform[3])||it.height||10, y=it.transform[5], x=it.transform[4];
+      if(prev){
+        var newLine=prev.eol||Math.abs(y-prev.y)>Math.max(3,h*0.5);
+        if(newLine){lines.push(cur);cur=''}
+        else if(it.str&&x-prev.end>h*0.15&&!/\s$/.test(cur)&&!/^\s/.test(it.str))cur+=' ';
+      }
+      cur+=it.str;
+      prev={y:y,end:x+(it.width||0),eol:!!it.hasEOL};
     });
     lines.push(cur);
     lines=lines.map(function(l){return l.replace(/\s+$/,'')});
     var txtp=lines.join('\n').trim(), pi=0;
     try{var ops=await page.getOperatorList();pi=ops.fnArray.filter(function(f){return imgOps.indexOf(f)>=0}).length}catch(x){}
     imgs+=pi;
-    src.push(tc.items.map(function(i){return i.str}).join(' '));
-    lines.forEach(function(l){if(l.trim())paras.push(l.trim())});
+    src.push(tc.items.map(function(i){return i.str}).join(''));
     if(txtp)any=true;else empty.push(p+(pi?'(이미지 '+pi+')':''));
     out.push(($('optPdfPg').checked?'<!-- 페이지 '+p+' -->\n':'')+txtp);
   }
   if(!any)throw new Error('텍스트를 찾지 못했습니다. 스캔본(이미지) PDF는 OCR이 필요합니다.');
   var notes=[note('info','총 '+doc.numPages+'쪽 처리')];
   if(empty.length)notes.push(note('warn','텍스트가 없는 페이지: '+empty.join(', ')+' (스캔/이미지 페이지는 OCR이 필요해 내용이 빠집니다)'));
-  if(imgs)notes.push(note('info','PDF 안의 이미지 '+imgs+'개는 변환되지 않습니다.'));
-  return res(out.join('\n\n')+'\n',src.join('\n'),paras,notes);
+  if(imgs)notes.push(note('info','PDF 안의 이미지 '+imgs+'개는 변환·검증 대상이 아닙니다. 캡처나 그림 속 글자는 결과에 들어가지 않습니다.'));
+  return res(out.join('\n\n')+'\n',src.join('\n'),[],notes,true,true,src);
 }
 async function docx(buf){
   if(!window.mammoth)throw new Error('DOCX 라이브러리를 불러오지 못했습니다.');
@@ -338,13 +342,14 @@ async function xlsx(buf){
 }
 
 /* ---- 검증 ---- */
-function tokens(s){return (String(s).normalize('NFC').toLowerCase().match(/[\p{L}\p{N}]+/gu))||[]}
-function missingTokens(srcTok,md){
-  var m={};tokens(md.replace(/\]\(data:[^)]*\)/g,']()')).forEach(function(t){m[t]=(m[t]||0)+1});
+function tokens(s,cm){return (String(s).normalize('NFC').toLowerCase().match(cm?/[\p{L}\p{N}]/gu:/[\p{L}\p{N}]+/gu))||[]}
+function missingTokens(srcTok,md,cm){
+  var m={};tokens(md.replace(/\]\(data:[^)]*\)/g,']()'),cm).forEach(function(t){m[t]=(m[t]||0)+1});
   var miss=[];srcTok.forEach(function(t){if(m[t]>0)m[t]--;else miss.push(t)});
   return miss;
 }
 function recover(it,res0){
+  if(it.charMode)return;
   var miss=missingTokens(it.srcTok,it.md);
   if(!miss.length||!res0.paras.length)return;
   var set={};miss.forEach(function(t){set[t]=1});
@@ -361,14 +366,23 @@ function recover(it,res0){
 function verify(it){
   var r={verdict:'pass',lines:[]};
   function add(l,m){r.lines.push({l:l,m:m});if(l==='fail')r.verdict='fail';else if(l==='warn'&&r.verdict==='pass')r.verdict='warn'}
-  var N=it.srcTok.length, miss=missingTokens(it.srcTok,it.md), M=miss.length;
+  var N=it.srcTok.length, miss=missingTokens(it.srcTok,it.md,it.charMode), M=miss.length, unit=it.charMode?'글자':'단어';
   if(!it.md.trim()&&it.expectText)add(N?'fail':'warn',N?'변환 결과가 비어 있습니다.':'원본에 텍스트가 없고 결과도 비어 있습니다 (빈 파일).');
   else if(!N&&it.expectText)add('warn','원본에서 추출된 텍스트가 없습니다. 내용이 이미지일 수 있습니다.');
   else if(N){
-    if(!M)add('ok','원본 단어 '+N.toLocaleString()+'개가 결과에 모두 포함되어 있습니다 (누락 0).');
+    if(!M)add('ok','원본 '+unit+' '+N.toLocaleString()+'개가 결과에 모두 포함되어 있습니다 (누락 0).'+(it.charMode?' (PDF는 띄어쓰기·줄바꿈 차이를 무시하고 글자 단위로 대조)':''));
     else{
-      var cov=(N-M)/N, ex=[];miss.forEach(function(t){if(ex.length<12&&ex.indexOf(t)<0)ex.push(t)});
-      add(cov>=0.98?'warn':'fail','원본 단어 '+N.toLocaleString()+'개 중 '+M.toLocaleString()+'개 누락 (포함률 '+(cov*100).toFixed(1)+'%). 예: '+ex.join(', '));
+      var cov=(N-M)/N, ex=[], pagesMsg='';miss.forEach(function(t){if(ex.length<12&&ex.indexOf(t)<0)ex.push(t)});
+      if(it.pageSrc){
+        var parts=it.md.split(/<!-- 페이지 (\d+) -->/), pm={};
+        for(var q=1;q<parts.length;q+=2)pm[parseInt(parts[q])]=parts[q+1];
+        if(Object.keys(pm).length){
+          var bad=[];it.pageSrc.forEach(function(ps,i){var n=missingTokens(tokens(ps,true),pm[i+1]||'',true).length;if(n)bad.push({p:i+1,n:n})});
+          bad.sort(function(a,b){return b.n-a.n});
+          if(bad.length)pagesMsg=' 누락이 많은 쪽: '+bad.slice(0,8).map(function(x){return x.p+'쪽('+x.n+'글자)'}).join(', ')+(bad.length>8?' 외 '+(bad.length-8)+'쪽':'')+'.';
+        }
+      }
+      add(cov>=0.98?'warn':'fail','원본 '+unit+' '+N.toLocaleString()+'개 중 '+M.toLocaleString()+'개 누락 (포함률 '+(cov*100).toFixed(1)+'%). 예: '+ex.join(', ')+'.'+pagesMsg);
     }
   }
   if(it.recovered)add('warn','누락된 원문 단락 '+it.recovered+'개를 문서 끝 "보완 추가된 원문"에 자동으로 넣었습니다. 위치를 확인하세요.');
@@ -388,7 +402,7 @@ function addFiles(fl){
     var it={id:++uid,file:f,name:base(f.name)+'.md',state:'run',md:'',err:'',srcTok:[],notes:[],report:null,override:false,recovered:0,expectText:true};
     items.push(it);
     convert(f).then(function(r){
-      it.md=r.md;it.notes=r.notes;it.expectText=r.expectText;it.srcTok=tokens(r.src);
+      it.md=r.md;it.notes=r.notes;it.expectText=r.expectText;it.charMode=r.charMode;it.pageSrc=r.pageSrc;it.srcTok=tokens(r.src,r.charMode);
       recover(it,r);verify(it);it.state='ok';
     }).catch(function(e){it.state='err';var m=(e&&e.message)||String(e);it.err=/[가-힣]/.test(m)?m:'파일을 읽을 수 없습니다. 손상되었거나 형식이 맞지 않을 수 있습니다. ('+m.split('\n')[0]+')'}).then(function(){render()});
   });
@@ -566,7 +580,7 @@ async function finalCheck(list,action,bulk){
     var it=list[k], lines=[], v='pass';
     function add(l,m){lines.push({l:l,m:m});if(l==='fail')v='fail';else if(l==='warn'&&v==='pass')v='warn'}
     try{
-      var fr=await convert(it.file), tmp={md:fr.md,srcTok:tokens(fr.src),notes:fr.notes,expectText:fr.expectText,recovered:0};
+      var fr=await convert(it.file), tmp={md:fr.md,srcTok:tokens(fr.src,fr.charMode),charMode:fr.charMode,pageSrc:fr.pageSrc,notes:fr.notes,expectText:fr.expectText,recovered:0};
       recover(tmp,fr);var r1=verify(tmp);
       if(r1.verdict==='fail')add('fail','원본을 처음부터 다시 변환한 결과도 검증에 실패했습니다.');
       else add('ok','원본 재변환 검증: '+(r1.verdict==='pass'?'통과 (누락 0)':'주의 수준'));
@@ -575,7 +589,7 @@ async function finalCheck(list,action,bulk){
     }catch(e){add('fail','원본 재변환 실패: '+((e&&e.message)||e))}
     var r2=verify(it);
     r2.lines.forEach(function(x){if(x.l==='fail'||x.l==='warn')add(x.l,'현재 결과: '+x.m)});
-    if(r2.verdict==='pass')add('ok','현재 결과 검증: 원본 단어 '+it.srcTok.length.toLocaleString()+'개 모두 포함');
+    if(r2.verdict==='pass')add('ok','현재 결과 검증: 원본 '+(it.charMode?'글자 ':'단어 ')+it.srcTok.length.toLocaleString()+'개 모두 포함');
     formatChecks(it.md).forEach(function(x){add(x.l,x.m)});
     if(v==='fail'&&!it.override)blocks.push(it.file.name);
     if(v==='fail')needOverride.push(it);
