@@ -386,7 +386,7 @@ function addFiles(fl){
     convert(f).then(function(r){
       it.md=r.md;it.notes=r.notes;it.expectText=r.expectText;it.srcTok=tokens(r.src);
       recover(it,r);verify(it);it.state='ok';
-    }).catch(function(e){it.state='err';it.err=(e&&e.message)||String(e)}).then(function(){render()});
+    }).catch(function(e){it.state='err';var m=(e&&e.message)||String(e);it.err=/[가-힣]/.test(m)?m:'파일을 읽을 수 없습니다. 손상되었거나 형식이 맞지 않을 수 있습니다. ('+m.split('\n')[0]+')'}).then(function(){render()});
   });
   if(sel<0&&items.length)sel=0;
   render();
@@ -491,6 +491,10 @@ function gate(list){
   if(bad.length){toast('검증 실패: '+bad.map(function(i){return i.file.name}).join(', ')+' — 결과를 확인하세요');return false}
   return true;
 }
+function skippedMd(){
+  var sk=items.filter(function(i){return i.state==='err'});
+  return sk.length?'\n## 변환 오류로 제외된 파일\n\n'+sk.map(function(i){return '- '+i.file.name+': '+i.err}).join('\n')+'\n':'';
+}
 function reportMd(list){
   return '# 변환 검증 보고서\n\n'+list.map(function(i){
     var r=verify(i);
@@ -500,19 +504,22 @@ function reportMd(list){
 $('btnCopy').onclick=function(){var c=current();if(c&&gate([c]))copy(c.md)};
 $('btnSave').onclick=function(){var c=current();if(c)finalCheck([c],function(){save(c.name,c.md)})};
 $('btnRecheck').onclick=function(){var c=current();if(c)finalCheck([c],null)};
+function skippedOf(){return items.filter(function(i){return i.state!=='ok'})}
 $('btnMerge').onclick=function(){
   var ok=items.filter(function(i){return i.state==='ok'});
-  finalCheck(ok,function(){save('merged.md',ok.map(function(i){return '# '+i.file.name+'\n\n'+i.md.trim()}).join('\n\n---\n\n')+'\n')});
+  if(items.some(function(i){return i.state==='run'}))return toast('변환 중인 파일이 있습니다. 끝난 뒤 다시 시도하세요.');
+  finalCheck(ok,function(){save('merged.md',ok.map(function(i){return '# '+i.file.name+'\n\n'+i.md.trim()}).join('\n\n---\n\n')+'\n')},true);
 };
 $('btnZip').onclick=function(){
   if(!window.JSZip)return toast('ZIP 라이브러리를 불러오지 못했습니다.');
   var ok=items.filter(function(i){return i.state==='ok'});
+  if(items.some(function(i){return i.state==='run'}))return toast('변환 중인 파일이 있습니다. 끝난 뒤 다시 시도하세요.');
   finalCheck(ok,async function(){
     var z=new JSZip(), names=uniq(ok.map(function(i){return i.name}));
     ok.forEach(function(it,i){z.file(names[i],it.md)});
-    z.file('_검증보고서.md',reportMd(ok));
+    z.file('_검증보고서.md',reportMd(ok)+skippedMd());
     save('markdown-files.zip',await z.generateAsync({type:'blob'}));
-  });
+  },true);
 };
 
 /* ---- 다운로드 전 최종 검증: 원본을 처음부터 다시 변환해 대조하고, 결과 형식과 저장 무결성을 점검 ---- */
@@ -533,10 +540,20 @@ function formatChecks(md){
   else out.push({l:'ok',m:'저장 시 글자 보존(UTF-8) 확인, 크기 '+fmtSize(new TextEncoder().encode(md).length)});
   return out;
 }
-async function finalCheck(list,action){
+async function finalCheck(list,action,bulk){
   finalBusy=true;var box=$('final');box.hidden=false;box.textContent='';
   var h=document.createElement('div');h.className='rhead';var b=document.createElement('b');b.textContent='다운로드 전 최종 검증 중...';h.appendChild(b);box.appendChild(h);
   var all='pass',blocks=[],needOverride=[];
+  var sk=items.filter(function(i){return bulk&&i.state==='err'});
+  if(sk.length){
+    all='warn';
+    var hd0=document.createElement('div');hd0.className='rhead';
+    var p0=document.createElement('span');p0.className='st err';p0.textContent='제외';
+    var n0=document.createElement('b');n0.textContent='변환 오류로 이번 출력에서 빠지는 파일 '+sk.length+'개';hd0.append(p0,n0);box.appendChild(hd0);
+    var u0=document.createElement('ul');
+    sk.forEach(function(i){var li=document.createElement('li');li.className='fail';var mk=document.createElement('span');mk.className='mk';mk.textContent='✕';var t=document.createElement('span');t.textContent=i.file.name+' — '+i.err;li.append(mk,t);u0.appendChild(li)});
+    box.appendChild(u0);
+  }
   for(var k=0;k<list.length;k++){
     var it=list[k], lines=[], v='pass';
     function add(l,m){lines.push({l:l,m:m});if(l==='fail')v='fail';else if(l==='warn'&&v==='pass')v='warn'}
