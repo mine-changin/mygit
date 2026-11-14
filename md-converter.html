@@ -366,7 +366,7 @@ function verify(it){
     }
   }
   if(it.recovered)add('warn','누락된 원문 단락 '+it.recovered+'개를 문서 끝 "보완 추가된 원문"에 자동으로 넣었습니다. 위치를 확인하세요.');
-  if(/�/.test(it.md))add('warn','깨진 문자(�)가 있습니다. 원본 인코딩을 확인하세요.');
+  if(/\uFFFD/.test(it.md))add('warn','깨진 문자(\uFFFD)가 있습니다. 원본 인코딩을 확인하세요.');
   it.notes.forEach(function(n){add(n.l,n.m)});
   it.report=r;return r;
 }
