@@ -170,6 +170,33 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--tx);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:13.5px;opacity:0;pointer-events:none;transition:.2s;z-index:50}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- 모드 / 노트 ---------- */
+.modes{display:inline-flex;background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:3px;margin-bottom:10px;gap:2px}
+.mode{border:0;background:none;color:var(--tx2);padding:6px 14px;border-radius:8px;font-weight:600;font-size:14px}
+.mode.on{background:var(--surface);color:var(--pri);box-shadow:var(--shadow)}
+.filters{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+.frow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.fl{font-size:12px;color:var(--mute);font-weight:700}
+.chip.on{background:var(--pri);border-color:var(--pri);color:var(--pri-tx)}
+.chip small{opacity:.7}
+.ov{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px}
+@media(max-width:700px){.ov{grid-template-columns:1fr}}
+.dom{display:grid;grid-template-columns:1fr 80px 38px;gap:8px;align-items:center;font-size:13px;margin:5px 0}
+.bar2{height:6px;background:var(--line);border-radius:9px;overflow:hidden}.bar2 i{display:block;height:100%;background:var(--pri)}
+.dom b{text-align:right}
+details.nt{margin-bottom:12px;overflow:hidden}
+details.nt summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:12px 14px;flex-wrap:wrap}
+details.nt summary::-webkit-details-marker{display:none}
+details.nt summary:hover{background:var(--surface2)}
+.nt .ft{font-weight:700;flex:1;min-width:140px}
+.star{border:0;background:none;font-size:20px;line-height:1;color:var(--mute);padding:0 2px}.star.on{color:#f59e0b}
+.xm{font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px;background:var(--pri-soft);color:var(--pri)}.xm.CKAD{background:var(--lo-bg);color:var(--lo)}
+.cat{font-size:12px;color:var(--mute);border:1px solid var(--line);border-radius:99px;padding:0 8px}
+.nbody{border-top:1px solid var(--line);padding-top:8px}
+.ans table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0;display:block;overflow:auto}
+.ans th,.ans td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+.ans th{background:var(--surface2)}
 </style>
 </head>
 <body>
@@ -206,19 +233,24 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 
 <main>
   <section class="card searchbar">
+    <div class="modes" role="tablist">
+      <button class="mode on" data-m="fix" role="tab">🛠 문제 해결</button>
+      <button class="mode" data-m="notes" role="tab">📚 CKA/CKAD 노트</button>
+    </div>
     <div class="sbrow">
       <div class="field"><span>🔍</span>
         <input id="q" type="text" placeholder="증상·에러 메시지 검색" autocomplete="off"><kbd>/</kbd></div>
       <button class="btn pri" id="go">검색</button>
       <button class="btn" id="scan">⚡ 전체 점검</button>
     </div>
-    <div class="chips"><small>예시</small>
+    <div class="chips" id="chips"><small>예시</small>
       <button class="chip" data-q="No space left on device">디스크 부족</button>
       <button class="chip" data-q="CrashLoopBackOff">CrashLoopBackOff</button>
       <button class="chip" data-q="permission denied selinux">권한/SELinux</button>
       <button class="chip" data-q="connection refused">연결 거부</button>
       <button class="chip" data-q="메모리 부족">메모리 부족</button>
     </div>
+    <div class="filters" id="nfilters" hidden></div>
   </section>
   <div id="out"></div>
 </main>
@@ -231,7 +263,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const fmt=n=>n>1048576?(n/1048576).toFixed(1)+' MB':n>1024?(n/1024).toFixed(1)+' KB':n+' B';
 const icon=n=>({log:'📜',md:'📝',pdf:'📕',docx:'📘',json:'🧾',yaml:'⚙️',yml:'⚙️',conf:'⚙️',csv:'📊'})[n.split('.').pop().toLowerCase()]||'📄';
 const SEV={high:'높음',medium:'중간',low:'낮음'};
-let terms=[],hasFiles=false;
+let terms=[],hasFiles=false,mode='fix';
 
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('show'),1600)}
 async function copy(text){try{await navigator.clipboard.writeText(text);toast('복사했습니다')}catch{toast('복사 실패')}}
@@ -247,17 +279,24 @@ function hl(text){
   if(!w.length)return h;
   return h.replace(new RegExp('('+w.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')','gi'),'<mark>$1</mark>');
 }
+function tblHtml(rows){
+  const cells=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+  const [h,...t]=rows.filter(r=>!/^\s*\|[\s:|-]+\|\s*$/.test(r));
+  return `<table><thead><tr>${cells(h).map(c=>`<th>${inl(c)}</th>`).join('')}</tr></thead><tbody>${t.map(r=>`<tr>${cells(r).map(c=>`<td>${inl(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
 const inl=s=>esc(s).replace(/`([^`]+)`/g,'<code class="cp" title="클릭하여 복사">$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
 function mdBlock(src){
   return src.split(/```[a-z]*\n?/).map((p,i)=>{
     if(i%2)return `<pre><button class="copy">복사</button><code>${esc(p.replace(/\n$/,''))}</code></pre>`;
-    const o=[];let list=null;const close=()=>{if(list){o.push(`</${list}>`);list=null}};
+    const o=[];let tb=[];let list=null;const close=()=>{if(list){o.push(`</${list}>`);list=null}};
     for(const l of p.split('\n')){let m;
+      if(/^\s*\|.*\|\s*$/.test(l)){close();tb.push(l);continue}
+      if(tb.length){o.push(tblHtml(tb));tb=[]}
       if(m=l.match(/^#{1,4}\s+(.*)/)){close();o.push(`<h4>${inl(m[1])}</h4>`)}
       else if(m=l.match(/^\s*[-*]\s+(.*)/)){if(list!=='ul'){close();o.push('<ul>');list='ul'}o.push(`<li>${inl(m[1])}</li>`)}
       else if(m=l.match(/^\s*\d+[.)]\s+(.*)/)){if(list!=='ol'){close();o.push('<ol>');list='ol'}o.push(`<li>${inl(m[1])}</li>`)}
       else{close();if(l.trim())o.push(`<div>${inl(l)}</div>`)}}
-    close();return o.join('');
+    close();if(tb.length)o.push(tblHtml(tb));return o.join('');
   }).join('');
 }
 
@@ -308,6 +347,7 @@ $('#savekey').onclick=async()=>{const r=await(await fetch('/api/config',{method:
 
 /* ---------- 결과 렌더링 ---------- */
 function empty(){
+  if(mode==='notes')return notes();
   $('#out').innerHTML=`<div class="card empty"><div class="big">🧭</div>
   <h3>${hasFiles?'검색어를 입력하거나 전체 점검을 눌러보세요':'파일을 추가해 시작하세요'}</h3>
   <p>로그·설정·문서 파일에서 문제를 찾아 원인과 해결 단계를 알려드립니다.</p>
@@ -334,14 +374,15 @@ function findingsHtml(fs,title,withSum){
   </details>`).join('');
 }
 const aiHtml=a=>a?`<h2 class="sec">AI 분석</h2><div class="card ai-card"><div class="ph">🤖 Claude 분석 결과</div><div class="ans">${mdBlock(a)}</div></div>`:'';
-function hitsHtml(hs){
-  return `<h2 class="sec">검색 결과 <span class="n">${hs.length}</span></h2>`+(hs.length?hs.map(x=>`
+function hitsHtml(hs,title='검색 결과'){
+  return `<h2 class="sec">${title} <span class="n">${hs.length}</span></h2>`+(hs.length?hs.map(x=>`
   <div class="card hit"><div class="hh">${icon(x.file)}<b>${esc(x.file)}</b><span class="ln">${x.start}–${x.end}줄</span>
   <span class="bar" title="관련도 ${x.score}%"><i style="width:${x.score}%"></i></span></div><pre>${hl(x.text)}</pre></div>`).join('')
   :'<div class="card empty" style="padding:24px">일치하는 내용이 없습니다. 다른 키워드로 시도해 보세요.</div>');
 }
 
 async function scan(){
+  if(mode==='notes'){$('#q').value='';return notes()}
   if(!await loadFiles()){empty();return}
   const ai=$('#useai').checked;busy(ai);terms=[];
   const r=await(await fetch('/api/scan')).json();
@@ -350,6 +391,7 @@ async function scan(){
     $('#out').insertAdjacentHTML('afterbegin',aiHtml(a.ai));}
 }
 async function search(){
+  if(mode==='notes')return notes();
   const q=$('#q').value.trim();if(!q)return scan();
   if(!hasFiles&&!await loadFiles()){toast('먼저 파일을 추가하세요');empty();return}
   const ai=$('#useai').checked;busy(ai);
@@ -359,8 +401,69 @@ async function search(){
 }
 $('#go').onclick=search;$('#scan').onclick=scan;
 $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
-document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{$('#q').value=c.dataset.q;search()});
+$('#chips').addEventListener('click',e=>{const c=e.target.closest('.chip');if(c){$('#q').value=c.dataset.q;search()}});
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();$('#q').focus()}});
+/* ---------- CKA/CKAD 노트 ---------- */
+let nExam='',nCat='',nBm=false;
+const BM=(()=>{try{return new Set(JSON.parse(localStorage.getItem('docsolver.bm')||'[]'))}catch{return new Set()}})();
+const saveBm=()=>{try{localStorage.setItem('docsolver.bm',JSON.stringify([...BM]))}catch{}};
+const CHIPS={
+  fix:[['No space left on device','디스크 부족'],['CrashLoopBackOff','CrashLoopBackOff'],['permission denied selinux','권한/SELinux'],['connection refused','연결 거부'],['메모리 부족','메모리 부족']],
+  notes:[['etcd 백업','etcd 백업'],['taint toleration','taint/toleration'],['NetworkPolicy','NetworkPolicy'],['kubeadm upgrade','kubeadm 업그레이드'],['jsonpath','jsonpath'],['rbac','RBAC'],['노드 NotReady','노드 NotReady']]};
+function setMode(m){
+  mode=m;
+  document.querySelectorAll('.mode').forEach(b=>{b.classList.toggle('on',b.dataset.m===m);b.setAttribute('aria-selected',b.dataset.m===m)});
+  $('#chips').innerHTML='<small>예시</small>'+CHIPS[m].map(([q,l])=>`<button class="chip" data-q="${esc(q)}">${esc(l)}</button>`).join('');
+  $('#nfilters').hidden=m!=='notes';
+  $('#scan').textContent=m==='notes'?'📚 전체 보기':'⚡ 전체 점검';
+  $('#q').placeholder=m==='notes'?'노트 검색 (예: etcd 백업, taint, NetworkPolicy)':'증상·에러 메시지 검색';
+  $('#q').value='';
+  if(m==='notes')notes();else hasFiles?scan():empty();
+}
+function renderFilters(meta){
+  $('#nfilters').innerHTML=`<div class="frow"><span class="fl">시험</span>${['','CKA','CKAD'].map(e=>`<button class="chip ${nExam===e?'on':''}" data-f="exam" data-v="${e}">${e||'전체'}</button>`).join('')}
+  <span class="fl" style="margin-left:8px">분류</span><button class="chip ${nCat===''?'on':''}" data-f="cat" data-v="">전체</button>${meta.cats.map(c=>`<button class="chip ${nCat===c.name?'on':''}" data-f="cat" data-v="${esc(c.name)}">${esc(c.name)} <small>${c.count}</small></button>`).join('')}
+  <button class="chip ${nBm?'on':''}" data-f="bm">⭐ 북마크 ${BM.size}</button></div>`;
+}
+function examOverview(meta){
+  const ids=nExam?[nExam]:['CKA','CKAD'];
+  return `<div class="ov">${ids.map(id=>`<div class="card pad"><h3 class="ttl">${id} 도메인 비중</h3>${meta.exams[id].domains.map(([n,p])=>`<div class="dom"><span>${esc(n)}</span><span class="bar2"><i style="width:${p*3}%"></i></span><b>${p}%</b></div>`).join('')}</div>`).join('')}</div>
+  <p class="hint" style="margin:0 2px 6px">비중은 공식 커리큘럼 기준이며 변경될 수 있습니다. 최신 내용은 CNCF 공식 커리큘럼을 확인하세요.</p>`;
+}
+function noteCard(n,i,total,searching){
+  const open=searching?i<2:total<=3, bm=BM.has(n.id);
+  return `<details class="card nt" ${open?'open':''}><summary>
+  <button class="star ${bm?'on':''}" data-id="${n.id}" aria-label="북마크" title="북마크">${bm?'★':'☆'}</button>
+  <span class="ft">${hl(n.title)}</span>${n.exams.map(e=>`<span class="xm ${e}">${e}</span>`).join('')}<span class="cat">${esc(n.cat)}</span><span class="chev">▶</span></summary>
+  <div class="ans nbody">${mdBlock(n.body)}</div></details>`;
+}
+async function notes(){
+  const q=$('#q').value.trim();busy(false);
+  const r=await(await fetch('/api/notes?'+new URLSearchParams({q,exam:nExam,cat:nCat}))).json();
+  if(nCat&&!r.meta.cats.some(c=>c.name===nCat)){nCat='';return notes()}
+  terms=r.terms;renderFilters(r.meta);
+  const list=nBm?r.notes.filter(n=>BM.has(n.id)):r.notes;
+  let h=(!q&&!nBm)?examOverview(r.meta):'';
+  h+=`<h2 class="sec">${q?'노트 검색 결과':'학습노트'} <span class="n">${list.length}</span></h2>`;
+  h+=list.length?list.map((n,i)=>noteCard(n,i,list.length,!!q)).join(''):`<div class="card empty" style="padding:24px">${nBm?'북마크한 노트가 없습니다. ☆를 눌러 추가하세요.':'일치하는 노트가 없습니다. 다른 키워드로 시도해 보세요.'}</div>`;
+  if(r.mine&&r.mine.length)h+=hitsHtml(r.mine,'내 업로드 노트에서 찾은 내용');
+  $('#out').innerHTML=h;
+}
+$('#nfilters').addEventListener('click',e=>{
+  const c=e.target.closest('.chip');if(!c)return;
+  const f=c.dataset.f,v=c.dataset.v;
+  if(f==='exam')nExam=v;else if(f==='cat')nCat=v;else if(f==='bm')nBm=!nBm;
+  notes();
+});
+document.addEventListener('click',e=>{
+  const s=e.target.closest('.star');if(!s)return;
+  e.preventDefault();const id=s.dataset.id;
+  BM.has(id)?BM.delete(id):BM.add(id);saveBm();
+  s.classList.toggle('on',BM.has(id));s.textContent=BM.has(id)?'★':'☆';
+  const b=document.querySelector('[data-f=bm]');if(b)b.textContent='⭐ 북마크 '+BM.size;
+  if(nBm&&!BM.has(id))notes();
+});
+document.querySelectorAll('.mode').forEach(b=>b.onclick=()=>setMode(b.dataset.m));
 loadFiles().then(empty);
 </script>
 </body></html>

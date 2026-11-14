@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from kb import RULES, SEV_ORDER
+from notes import NOTES, EXAMS, CATS
 
 BASE = Path(__file__).parent
 DATA = BASE / "data"
@@ -151,6 +152,42 @@ def match_rules_text(text, source):
 
 IDX = Index()
 
+class NoteIndex:
+    """내장 CKA/CKAD 학습노트용 BM25 검색 (제목·태그에 가중치)."""
+    def __init__(self):
+        self.docs, self.df = [], Counter()
+        for n in NOTES:
+            text = (n["title"] + " ") * 3 + (" ".join(n["tags"]) + " ") * 2 + n["body"]
+            toks = tokenize(text)
+            self.docs.append((n, Counter(toks), len(toks) or 1, text.lower()))
+            self.df.update(set(toks))
+        self.avg = sum(d[2] for d in self.docs) / len(self.docs)
+
+    def search(self, q, exam="", cat=""):
+        pool = [d for d in self.docs if (not exam or exam in d[0]["exams"])]
+        cats = Counter(d[0]["cat"] for d in pool)            # 필터 UI 용 카테고리별 개수
+        pool = [d for d in pool if (not cat or d[0]["cat"] == cat)]
+        q = q.strip()
+        if not q:
+            return [(d[0], None) for d in pool], cats
+        qt, n, k1, b, out = set(tokenize(q)), len(self.docs), 1.4, 0.75, []
+        for note, tf, ln, low in pool:
+            s = 0.0
+            for t in qt:
+                f = tf.get(t)
+                if f:
+                    idf = math.log(1 + (n - self.df[t] + 0.5) / (self.df[t] + 0.5))
+                    s += idf * f * (k1 + 1) / (f + k1 * (1 - b + b * ln / self.avg))
+            if q.lower() in low:                               # 구문이 그대로 포함되면 가산
+                s += 2.0
+            if s > 0:
+                out.append((s, note))
+        out.sort(key=lambda x: -x[0])
+        top = out[0][0] if out else 1
+        return [(note, round(s / top * 100)) for s, note in out], cats
+
+NIDX = NoteIndex()
+
 def load_existing():
     for p in sorted(DATA.iterdir()):
         if p.is_file():
@@ -215,6 +252,19 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/api/files":
             self._json({"files": [{"name": n, "size": f["size"], "lines": len(f["lines"])} for n, f in IDX.files.items()],
                         "ai": bool(CFG["key"])})
+        elif u.path == "/api/notes":
+            qs = urllib.parse.parse_qs(u.query)
+            q, exam, cat = (qs.get(k, [""])[0] for k in ("q", "exam", "cat"))
+            exam = exam if exam in EXAMS else ""
+            found, cats = NIDX.search(q, exam, cat)
+            mine = IDX.search(q, 4) if q.strip() and IDX.files else []
+            self._json({
+                "notes": [{"id": n["id"], "title": n["title"], "exams": n["exams"], "cat": n["cat"],
+                           "body": n["body"], "score": sc} for n, sc in found],
+                "mine": mine, "terms": sorted(set(tokenize(q))),
+                "meta": {"cats": [{"name": c, "count": cats.get(c, 0)} for c in CATS if cats.get(c)],
+                         "exams": {k: {"name": v["name"], "domains": v["domains"]} for k, v in EXAMS.items()},
+                         "total": len(NOTES)}})
         elif u.path == "/api/scan":
             self._json({"findings": IDX.scan()})
         else:
