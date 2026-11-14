@@ -503,8 +503,9 @@ function copy(text){
   else fallback();
 }
 function outNames(list){
-  var cnt={};list.forEach(function(i){var b=base(i.file.name);cnt[b]=(cnt[b]||0)+1});
-  return uniq(list.map(function(i){var b=base(i.file.name);return cnt[b]>1&&ext(i.file.name)?i.file.name+'.md':i.name}));
+  // 원본 이름은 그대로 두고 확장자만 .md. 이름이 겹치면 이름은 바꾸지 않고 원본 확장자 폴더로 나눕니다.
+  var cnt={};list.forEach(function(i){var b=base(i.file.name).toLowerCase();cnt[b]=(cnt[b]||0)+1});
+  return uniq(list.map(function(i){var e=ext(i.file.name);return cnt[base(i.file.name).toLowerCase()]>1&&e?e+'/'+i.name:i.name}));
 }
 function uniq(names){var seen={};return names.map(function(n){var k=n,i=1;while(seen[k]){k=n.replace(/\.md$/,'')+'_'+(++i)+'.md'}seen[k]=1;return k})}
 function gate(list){
