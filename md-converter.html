@@ -44,7 +44,7 @@ ul.files li:hover{background:var(--accent-soft)}
 .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .meta{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
 .st{font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;border:1px solid currentColor;white-space:nowrap}
-.st.ok{color:var(--ok)} .st.run{color:var(--warn)} .st.err{color:var(--err)}
+.st.ok{color:var(--ok)} .st.run{color:var(--muted)} .st.warn{color:var(--warn)} .st.err{color:var(--err)}
 .x{border:0;background:none;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:4px}
 .x:hover{color:var(--err)}
 .empty{padding:16px 14px;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
@@ -55,6 +55,15 @@ button.b:hover:not(:disabled){border-color:var(--accent)}
 button.b.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
 button.b:disabled{opacity:.45;cursor:not-allowed}
 button:focus-visible,li:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.report{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:13px}
+.report[hidden]{display:none}
+.rhead{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.rhead b{font-size:13px}
+.report ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.report li{display:flex;gap:8px;min-width:0;overflow-wrap:anywhere}
+.report li .mk{font-family:var(--font-mono);font-weight:700;flex:none;width:1.2em;text-align:center}
+.report li.ok .mk{color:var(--ok)} .report li.warn .mk{color:var(--warn)} .report li.fail .mk{color:var(--err)} .report li.info .mk{color:var(--muted)}
+.report label{display:flex;gap:8px;align-items:center;cursor:pointer;color:var(--err);font-weight:500}
 textarea{display:block;width:100%;min-height:52vh;border:0;border-radius:0 0 8px 8px;padding:14px;resize:vertical;
   font-family:var(--font-mono);font-size:12.5px;line-height:1.6;background:var(--surface);color:var(--ink)}
 textarea:focus{outline:none}
@@ -74,7 +83,7 @@ textarea:focus{outline:none}
 <div class="wrap">
   <header>
     <h1>MD 변환기</h1>
-    <p>파일은 브라우저 안에서만 처리되며 서버로 전송되지 않습니다.</p>
+    <p>변환 후 원본과 다시 대조해 누락이 없을 때만 출력합니다. 파일은 서버로 전송되지 않습니다.</p>
   </header>
 
   <div class="grid">
@@ -99,6 +108,7 @@ textarea:focus{outline:none}
         <button class="b" id="btnCopy" disabled>복사</button>
         <button class="b pri" id="btnSave" disabled>.md 저장</button>
       </div>
+      <div class="report" id="report" hidden></div>
       <textarea id="out" spellcheck="false" placeholder="변환된 마크다운이 여기에 표시됩니다. 직접 수정도 가능합니다." disabled></textarea>
       <div class="foot">
         <span class="note" id="summary">0개 파일</span>
@@ -170,15 +180,23 @@ function turndown(){
   return td;
 }
 
-/* ---- 변환기 ---- */
+/* ---- 변환기: 각 변환기는 {md, src, paras, notes, expectText}를 반환 ----
+   src   = 원본에서 별도 경로로 뽑은 전체 텍스트 (검증 기준)
+   paras = 원본 단락 목록 (누락 시 말미에 보완 추가) */
+function res(md,src,paras,notes,expectText){return{md:md,src:src||'',paras:paras||[],notes:notes||[],expectText:expectText!==false}}
+function note(l,m){return{l:l,m:m}}
+function xmlDoc(str){return new DOMParser().parseFromString(str,'text/xml')}
+function txt(nodes){return [].map.call(nodes,function(n){return n.textContent}).join('')}
+
 async function convert(file){
   var e=ext(file.name), buf;
   if(IMG[e]){
+    var md;
     if($('optImg').checked){
-      var url=await new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(fr.result)};fr.onerror=rej;fr.readAsDataURL(file)});
-      return '!['+base(file.name)+']('+url+')\n';
-    }
-    return '![]('+file.name+')\n';
+      var url=await new Promise(function(r,j){var fr=new FileReader();fr.onload=function(){r(fr.result)};fr.onerror=j;fr.readAsDataURL(file)});
+      md='!['+base(file.name)+']('+url+')\n';
+    }else md='![]('+file.name+')\n';
+    return res(md,'',[],[note('info','이미지 파일입니다. 이미지 속 글자는 인식(OCR)하지 않습니다.')],false);
   }
   buf=await file.arrayBuffer();
   if(e==='pdf')return pdf(buf);
@@ -190,19 +208,25 @@ async function convert(file){
   var u8=new Uint8Array(buf.slice(0,4096));
   if(u8.indexOf(0)>=0&&!(u8[0]===0xFF&&u8[1]===0xFE))throw new Error('지원하지 않는 바이너리 형식입니다.');
   var t=decode(buf);
-  if(e==='html'||e==='htm'){return turndown().turndown(t)+'\n'}
-  if(e==='csv')return table(parseCSV(t,','));
-  if(e==='tsv')return table(parseCSV(t,'\t'));
-  if(RAW_TEXT[e])return t;
-  if(e==='json'){try{t=JSON.stringify(JSON.parse(t),null,2)}catch(x){}}
-  return fence(t,e in TEXT_FENCE?TEXT_FENCE[e]:e);
+  if(e==='html'||e==='htm'){
+    var d=new DOMParser().parseFromString(t,'text/html');
+    [].forEach.call(d.querySelectorAll('script,style,noscript,template'),function(n){n.remove()});
+    return res(turndown().turndown(t)+'\n',d.body?d.body.textContent:'',[]);
+  }
+  if(e==='csv')return res(table(parseCSV(t,',')),t,[]);
+  if(e==='tsv')return res(table(parseCSV(t,'\t')),t,[]);
+  if(RAW_TEXT[e])return res(t,t,[]);
+  var shown=t;
+  if(e==='json'){try{shown=JSON.stringify(JSON.parse(t),null,2)}catch(x){}}
+  return res(fence(shown,e in TEXT_FENCE?TEXT_FENCE[e]:e),t,[]);
 }
 async function pdf(buf){
   if(!window.pdfjsLib)throw new Error('PDF 라이브러리를 불러오지 못했습니다.');
   pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  var doc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise, out=[], any=false;
+  var doc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise, out=[], src=[], paras=[], empty=[], imgs=0, any=false;
+  var O=pdfjsLib.OPS||{}, imgOps=[O.paintImageXObject,O.paintInlineImageXObject,O.paintImageMaskXObject,O.paintJpegXObject].filter(function(x){return x!=null});
   for(var p=1;p<=doc.numPages;p++){
-    var tc=await (await doc.getPage(p)).getTextContent(), lines=[], y=null, cur='';
+    var page=await doc.getPage(p), tc=await page.getTextContent(), lines=[], y=null, cur='';
     tc.items.forEach(function(it){
       if(!it.str&&!it.hasEOL)return;
       var yy=Math.round(it.transform[5]);
@@ -210,66 +234,157 @@ async function pdf(buf){
       cur+=it.str;y=yy;
     });
     lines.push(cur);
-    var txt=lines.map(function(l){return l.replace(/\s+$/,'')}).join('\n').trim();
-    if(txt)any=true;
-    out.push(($('optPdfPg').checked?'<!-- 페이지 '+p+' -->\n':'')+txt);
+    lines=lines.map(function(l){return l.replace(/\s+$/,'')});
+    var txtp=lines.join('\n').trim(), pi=0;
+    try{var ops=await page.getOperatorList();pi=ops.fnArray.filter(function(f){return imgOps.indexOf(f)>=0}).length}catch(x){}
+    imgs+=pi;
+    src.push(tc.items.map(function(i){return i.str}).join(' '));
+    lines.forEach(function(l){if(l.trim())paras.push(l.trim())});
+    if(txtp)any=true;else empty.push(p+(pi?'(이미지 '+pi+')':''));
+    out.push(($('optPdfPg').checked?'<!-- 페이지 '+p+' -->\n':'')+txtp);
   }
   if(!any)throw new Error('텍스트를 찾지 못했습니다. 스캔본(이미지) PDF는 OCR이 필요합니다.');
-  return out.join('\n\n')+'\n';
+  var notes=[note('info','총 '+doc.numPages+'쪽 처리')];
+  if(empty.length)notes.push(note('warn','텍스트가 없는 페이지: '+empty.join(', ')+' (스캔/이미지 페이지는 OCR이 필요해 내용이 빠집니다)'));
+  if(imgs)notes.push(note('info','PDF 안의 이미지 '+imgs+'개는 변환되지 않습니다.'));
+  return res(out.join('\n\n')+'\n',src.join('\n'),paras,notes);
 }
 async function docx(buf){
   if(!window.mammoth)throw new Error('DOCX 라이브러리를 불러오지 못했습니다.');
+  var embed=$('optImg').checked, nimg=0;
   var r=await mammoth.convertToHtml({arrayBuffer:buf},{convertImage:mammoth.images.imgElement(function(im){
-    if(!$('optImg').checked)return im.read('base64').then(function(){return{src:'image'}});
+    nimg++;
+    if(!embed)return im.read('base64').then(function(){return{src:'image'}});
     return im.read('base64').then(function(b){return{src:'data:'+im.contentType+';base64,'+b}})})});
-  return turndown().turndown(r.value)+'\n';
+  var md=turndown().turndown(r.value)+'\n';
+  // 별도 경로: 원본 XML에서 직접 단락 추출 (텍스트상자, 각주 포함)
+  var z=await JSZip.loadAsync(buf), paras=[], notes=[];
+  var parts=['word/document.xml','word/footnotes.xml','word/endnotes.xml'];
+  for(var i=0;i<parts.length;i++){
+    if(!z.files[parts[i]])continue;
+    var x=xmlDoc(await z.files[parts[i]].async('string'));
+    [].slice.call(x.getElementsByTagName('mc:Fallback')).forEach(function(n){n.parentNode.removeChild(n)});
+    [].forEach.call(x.getElementsByTagName('w:p'),function(p){
+      var t=[].filter.call(p.getElementsByTagName('w:t'),function(n){var a=n;while((a=a.parentNode)&&a.nodeName!=='w:p');return a===p}).map(function(n){return n.textContent}).join('').trim();
+      if(t)paras.push(t);
+    });
+  }
+  var uniq=paras;
+  var seen={};r.messages.forEach(function(m){var k=m.message.replace(/\d+/g,'#');if(!seen[k]){seen[k]=1;notes.push(note('warn','변환 경고: '+m.message))}});
+  notes.push(note('info','이미지 '+nimg+'개 '+(embed?'포함':'제외(옵션)')));
+  return res(md,uniq.join('\n'),uniq,notes);
 }
 async function pptx(buf){
   var z=await JSZip.loadAsync(buf), names=Object.keys(z.files).filter(function(n){return /^ppt\/slides\/slide\d+\.xml$/.test(n)});
   names.sort(function(a,b){return parseInt(a.match(/(\d+)\.xml/)[1])-parseInt(b.match(/(\d+)\.xml/)[1])});
-  var out=[];
+  var out=[], src=[], paras=[], notes=[];
+  function ps(x){return [].map.call(x.getElementsByTagName('a:p'),function(p){return txt(p.getElementsByTagName('a:t')).trim()}).filter(Boolean)}
   for(var i=0;i<names.length;i++){
-    var xml=new DOMParser().parseFromString(await z.files[names[i]].async('string'),'text/xml');
-    var paras=[].map.call(xml.getElementsByTagName('a:p'),function(p){
-      return [].map.call(p.getElementsByTagName('a:t'),function(t){return t.textContent}).join('')}).filter(Boolean);
-    out.push('## 슬라이드 '+(i+1)+'\n\n'+paras.map(function(p,k){return k?'- '+p:'**'+p+'**'}).join('\n'));
+    var list=ps(xmlDoc(await z.files[names[i]].async('string')));
+    list.forEach(function(p){paras.push(p);src.push(p)});
+    out.push('## 슬라이드 '+(i+1)+'\n\n'+list.map(function(p,k){return k?'- '+p:'**'+p+'**'}).join('\n'));
     var nn='ppt/notesSlides/notesSlide'+names[i].match(/(\d+)\.xml/)[1]+'.xml';
-    if(z.files[nn]){var nx=new DOMParser().parseFromString(await z.files[nn].async('string'),'text/xml');
-      var nt=[].map.call(nx.getElementsByTagName('a:t'),function(t){return t.textContent}).join(' ').trim();
-      if(nt)out[out.length-1]+='\n\n> 노트: '+nt}
+    if(z.files[nn]){
+      var nl=ps(xmlDoc(await z.files[nn].async('string'))).filter(function(t){return !/^\d+$/.test(t)});
+      if(nl.length){out[out.length-1]+='\n\n> 노트: '+nl.join(' ');nl.forEach(function(p){paras.push(p);src.push(p)})}
+    }
   }
   if(!out.length)throw new Error('슬라이드를 찾지 못했습니다.');
-  return out.join('\n\n')+'\n';
+  var dg=Object.keys(z.files).filter(function(n){return /^ppt\/diagrams\/data\d+\.xml$/.test(n)}), dtxt=[];
+  for(var d=0;d<dg.length;d++)dtxt=dtxt.concat(ps(xmlDoc(await z.files[dg[d]].async('string'))));
+  if(dtxt.length){out.push('## 부록: 다이어그램(SmartArt) 텍스트\n\n'+dtxt.map(function(t){return '- '+t}).join('\n'));dtxt.forEach(function(p){paras.push(p);src.push(p)});notes.push(note('info','SmartArt 텍스트 '+dtxt.length+'개를 부록에 추가'))}
+  var ch=Object.keys(z.files).filter(function(n){return /^ppt\/charts\/chart\d+\.xml$/.test(n)}).length;
+  var im=Object.keys(z.files).filter(function(n){return /^ppt\/media\//.test(n)}).length;
+  notes.push(note('info','슬라이드 '+names.length+'장 처리'));
+  if(ch)notes.push(note('warn','차트 '+ch+'개의 데이터는 변환되지 않습니다.'));
+  if(im)notes.push(note('info','슬라이드 안 이미지 '+im+'개는 변환되지 않습니다.'));
+  return res(out.join('\n\n')+'\n',src.join('\n'),paras,notes);
 }
 async function hwpx(buf){
   var z=await JSZip.loadAsync(buf), names=Object.keys(z.files).filter(function(n){return /^Contents\/section\d+\.xml$/i.test(n)}).sort();
-  var out=[];
+  var out=[], src=[];
+  function ownerP(n){while(n&&(n=n.parentNode)){if(n.nodeName==='hp:p')return n}return null}
   for(var i=0;i<names.length;i++){
-    var xml=new DOMParser().parseFromString(await z.files[names[i]].async('string'),'text/xml');
+    var xml=xmlDoc(await z.files[names[i]].async('string'));
+    src.push([].map.call(xml.getElementsByTagName('hp:t'),function(x){return x.textContent}).join('\n'));
     [].forEach.call(xml.getElementsByTagName('hp:p'),function(p){
-      var t=[].map.call(p.getElementsByTagName('hp:t'),function(x){return x.textContent}).join('');
-      if(t.trim())out.push(t.trim());
+      var t=[].filter.call(p.getElementsByTagName('hp:t'),function(x){return ownerP(x)===p}).map(function(x){return x.textContent}).join('').trim();
+      if(t)out.push(t);
     });
   }
   if(!out.length)throw new Error('본문을 찾지 못했습니다.');
-  return out.join('\n\n')+'\n';
+  return res(out.join('\n\n')+'\n',src.join('\n'),out,[note('info','구역 '+names.length+'개 처리')]);
 }
 async function xlsx(buf){
   if(!window.XLSX)throw new Error('엑셀 라이브러리를 불러오지 못했습니다.');
-  var wb=XLSX.read(buf,{type:'array'}), out=[];
-  wb.SheetNames.forEach(function(n){
-    var rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:false,defval:''});
+  var wb=XLSX.read(buf,{type:'array'}), out=[], src=[], notes=[], hidden=0;
+  wb.SheetNames.forEach(function(n,i){
+    var ws=wb.Sheets[n];
+    var rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
     out.push('## '+n+'\n\n'+table(rows));
+    src.push(n);
+    Object.keys(ws).forEach(function(k){ if(k[0]==='!')return; var c=ws[k]; var v=c.w!=null?c.w:c.v; if(v!=null&&String(v).trim()!=='')src.push(String(v))});
+    var h=wb.Workbook&&wb.Workbook.Sheets&&wb.Workbook.Sheets[i]&&wb.Workbook.Sheets[i].Hidden; if(h)hidden++;
   });
-  return out.join('\n');
+  notes.push(note('info','시트 '+wb.SheetNames.length+'개 처리'));
+  if(hidden)notes.push(note('info','숨김 시트 '+hidden+'개도 포함되었습니다.'));
+  return res(out.join('\n'),src.join('\n'),[],notes);
+}
+
+/* ---- 검증 ---- */
+function tokens(s){return (String(s).normalize('NFC').toLowerCase().match(/[\p{L}\p{N}]+/gu))||[]}
+function missingTokens(srcTok,md){
+  var m={};tokens(md.replace(/\]\(data:[^)]*\)/g,']()')).forEach(function(t){m[t]=(m[t]||0)+1});
+  var miss=[];srcTok.forEach(function(t){if(m[t]>0)m[t]--;else miss.push(t)});
+  return miss;
+}
+function recover(it,res0){
+  var miss=missingTokens(it.srcTok,it.md);
+  if(!miss.length||!res0.paras.length)return;
+  var set={};miss.forEach(function(t){set[t]=1});
+  var add=[],seen={};
+  res0.paras.forEach(function(p){
+    if(seen[p])return;
+    if(tokens(p).some(function(t){return set[t]})){seen[p]=1;add.push(p)}
+  });
+  if(add.length){
+    it.md=it.md.replace(/\s+$/,'')+'\n\n<!-- 보완: 변환 중 누락된 원문 단락을 자동 추가 -->\n## 보완 추가된 원문\n\n'+add.join('\n\n')+'\n';
+    it.recovered=add.length;
+  }
+}
+function verify(it){
+  var r={verdict:'pass',lines:[]};
+  function add(l,m){r.lines.push({l:l,m:m});if(l==='fail')r.verdict='fail';else if(l==='warn'&&r.verdict==='pass')r.verdict='warn'}
+  var N=it.srcTok.length, miss=missingTokens(it.srcTok,it.md), M=miss.length;
+  if(!it.md.trim()&&it.expectText)add('fail','변환 결과가 비어 있습니다.');
+  else if(!N&&it.expectText)add('warn','원본에서 추출된 텍스트가 없습니다. 내용이 이미지일 수 있습니다.');
+  else if(N){
+    if(!M)add('ok','원본 단어 '+N.toLocaleString()+'개가 결과에 모두 포함되어 있습니다 (누락 0).');
+    else{
+      var cov=(N-M)/N, ex=[];miss.forEach(function(t){if(ex.length<12&&ex.indexOf(t)<0)ex.push(t)});
+      add(cov>=0.98?'warn':'fail','원본 단어 '+N.toLocaleString()+'개 중 '+M.toLocaleString()+'개 누락 (포함률 '+(cov*100).toFixed(1)+'%). 예: '+ex.join(', '));
+    }
+  }
+  if(it.recovered)add('warn','누락된 원문 단락 '+it.recovered+'개를 문서 끝 "보완 추가된 원문"에 자동으로 넣었습니다. 위치를 확인하세요.');
+  if(/�/.test(it.md))add('warn','깨진 문자(�)가 있습니다. 원본 인코딩을 확인하세요.');
+  it.notes.forEach(function(n){add(n.l,n.m)});
+  it.report=r;return r;
+}
+function canOutput(it){
+  if(it.state!=='ok')return false;
+  var r=verify(it);
+  return r.verdict!=='fail'||!!it.override;
 }
 
 /* ---- 목록/화면 ---- */
 function addFiles(fl){
   [].forEach.call(fl,function(f){
-    var it={id:++uid,file:f,name:base(f.name)+'.md',state:'run',md:'',err:''};
+    var it={id:++uid,file:f,name:base(f.name)+'.md',state:'run',md:'',err:'',srcTok:[],notes:[],report:null,override:false,recovered:0,expectText:true};
     items.push(it);
-    convert(f).then(function(md){it.md=md;it.state='ok'}).catch(function(e){it.state='err';it.err=(e&&e.message)||String(e)}).then(function(){render()});
+    convert(f).then(function(r){
+      it.md=r.md;it.notes=r.notes;it.expectText=r.expectText;it.srcTok=tokens(r.src);
+      recover(it,r);verify(it);it.state='ok';
+    }).catch(function(e){it.state='err';it.err=(e&&e.message)||String(e)}).then(function(){render()});
   });
   if(sel<0&&items.length)sel=0;
   render();
@@ -281,7 +396,9 @@ function render(){
     var li=document.createElement('li');li.tabIndex=0;li.setAttribute('role','option');li.setAttribute('aria-selected',i===sel);
     var n=document.createElement('span');n.className='fn';n.textContent=it.file.name;n.title=it.file.name;
     var m=document.createElement('span');m.className='meta';m.textContent=fmtSize(it.file.size);
-    var s=document.createElement('span');s.className='st '+it.state;s.textContent=it.state==='ok'?'완료':it.state==='run'?'변환 중':'실패';
+    var s=document.createElement('span'),v=it.report&&it.report.verdict;
+    s.className='st '+(it.state==='ok'?(v==='pass'?'ok':v==='warn'?'warn':'err'):it.state==='run'?'run':'err');
+    s.textContent=it.state==='ok'?(v==='pass'?'검증 통과':v==='warn'?'주의':'검증 실패'):it.state==='run'?'변환 중':'변환 오류';
     var x=document.createElement('button');x.className='x';x.textContent='×';x.setAttribute('aria-label',it.file.name+' 삭제');
     x.onclick=function(ev){ev.stopPropagation();items.splice(i,1);if(sel>=items.length)sel=items.length-1;render()};
     li.append(n,m,s,x);
@@ -296,13 +413,45 @@ function render(){
   }
   out.disabled=!c||c.state!=='ok';
   $('curName').textContent=c?c.name:'결과 미리보기';
-  $('btnCopy').disabled=$('btnSave').disabled=!c||c.state!=='ok';
-  $('btnMerge').disabled=!ok.length;
-  $('btnZip').disabled=!ok.length;
-  var fail=items.filter(function(i){return i.state==='err'}).length;
-  $('summary').textContent=items.length+'개 파일 · 완료 '+ok.length+(fail?' · 실패 '+fail:'');
+  renderReport();
+  var okOut=!!c&&c.state==='ok'&&c.report&&(c.report.verdict!=='fail'||c.override);
+  $('btnCopy').disabled=$('btnSave').disabled=!okOut;
+  var allOk=ok.length>0&&ok.every(function(i){return i.report.verdict!=='fail'||i.override});
+  $('btnMerge').disabled=$('btnZip').disabled=!allOk;
+  var cnt={pass:0,warn:0,fail:0};ok.forEach(function(i){cnt[i.report.verdict]++});
+  var bad=items.filter(function(i){return i.state==='err'}).length;
+  $('summary').textContent=items.length+'개 파일 · 통과 '+cnt.pass+(cnt.warn?' · 주의 '+cnt.warn:'')+(cnt.fail?' · 검증 실패 '+cnt.fail:'')+(bad?' · 변환 오류 '+bad:'');
 }
-$('out').addEventListener('input',function(){var c=current();if(c&&c.state==='ok')c.md=this.value});
+function renderReport(){
+  var c=current(), box=$('report');
+  if(!c||c.state!=='ok'||!c.report){box.hidden=true;box.textContent='';return}
+  var r=c.report;box.hidden=false;box.textContent='';
+  var head=document.createElement('div');head.className='rhead';
+  var pill=document.createElement('span');pill.className='st '+(r.verdict==='pass'?'ok':r.verdict==='warn'?'warn':'err');
+  pill.textContent=r.verdict==='pass'?'검증 통과':r.verdict==='warn'?'주의':'검증 실패';
+  var b=document.createElement('b');b.textContent='원본 대조 결과';
+  head.append(pill,b);box.appendChild(head);
+  var ul=document.createElement('ul');
+  r.lines.forEach(function(x){
+    var li=document.createElement('li');li.className=x.l;
+    var mk=document.createElement('span');mk.className='mk';mk.textContent=x.l==='ok'?'✓':x.l==='warn'?'!':x.l==='fail'?'✕':'i';
+    var tx=document.createElement('span');tx.textContent=x.m;li.append(mk,tx);ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  if(r.verdict==='fail'){
+    var lb=document.createElement('label');lb.htmlFor='ovr';
+    var cb=document.createElement('input');cb.type='checkbox';cb.id='ovr';cb.checked=!!c.override;
+    cb.onchange=function(){c.override=cb.checked;render()};
+    lb.append(cb,document.createTextNode('누락을 확인했고, 그래도 출력합니다'));
+    box.appendChild(lb);
+  }
+}
+var vt=null;
+$('out').addEventListener('input',function(){
+  var c=current();if(!c||c.state!=='ok')return;
+  c.md=this.value;clearTimeout(vt);
+  vt=setTimeout(function(){verify(c);render()},400);
+});
 
 /* ---- 입력 ---- */
 var drop=$('drop');
@@ -333,16 +482,31 @@ function copy(text){
   else fallback();
 }
 function uniq(names){var seen={};return names.map(function(n){var k=n,i=1;while(seen[k]){k=n.replace(/\.md$/,'')+'_'+(++i)+'.md'}seen[k]=1;return k})}
-$('btnCopy').onclick=function(){var c=current();if(c)copy(c.md)};
-$('btnSave').onclick=function(){var c=current();if(c)save(c.name,c.md)};
+function gate(list){
+  var bad=list.filter(function(i){return !canOutput(i)});
+  render();
+  if(bad.length){toast('검증 실패: '+bad.map(function(i){return i.file.name}).join(', ')+' — 결과를 확인하세요');return false}
+  return true;
+}
+function reportMd(list){
+  return '# 변환 검증 보고서\n\n'+list.map(function(i){
+    var r=verify(i);
+    return '## '+i.file.name+' — '+(r.verdict==='pass'?'검증 통과':r.verdict==='warn'?'주의':'검증 실패')+'\n\n'+r.lines.map(function(x){return '- ['+x.l+'] '+x.m}).join('\n')+'\n';
+  }).join('\n');
+}
+$('btnCopy').onclick=function(){var c=current();if(c&&gate([c]))copy(c.md)};
+$('btnSave').onclick=function(){var c=current();if(c&&gate([c]))save(c.name,c.md)};
 $('btnMerge').onclick=function(){
   var ok=items.filter(function(i){return i.state==='ok'});
+  if(!gate(ok))return;
   save('merged.md',ok.map(function(i){return '# '+i.file.name+'\n\n'+i.md.trim()}).join('\n\n---\n\n')+'\n');
 };
 $('btnZip').onclick=async function(){
   if(!window.JSZip)return toast('ZIP 라이브러리를 불러오지 못했습니다.');
   var ok=items.filter(function(i){return i.state==='ok'}), z=new JSZip(), names=uniq(ok.map(function(i){return i.name}));
+  if(!gate(ok))return;
   ok.forEach(function(it,i){z.file(names[i],it.md)});
+  z.file('_검증보고서.md',reportMd(ok));
   save('markdown-files.zip',await z.generateAsync({type:'blob'}));
 };
 render();
