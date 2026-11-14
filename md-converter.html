@@ -504,7 +504,7 @@ function copy(text){
 }
 function outNames(list){
   var cnt={};list.forEach(function(i){var b=base(i.file.name);cnt[b]=(cnt[b]||0)+1});
-  return uniq(list.map(function(i){var b=base(i.file.name);return cnt[b]>1?b+'_'+ext(i.file.name)+'.md':i.name}));
+  return uniq(list.map(function(i){var b=base(i.file.name);return cnt[b]>1&&ext(i.file.name)?i.file.name+'.md':i.name}));
 }
 function uniq(names){var seen={};return names.map(function(n){var k=n,i=1;while(seen[k]){k=n.replace(/\.md$/,'')+'_'+(++i)+'.md'}seen[k]=1;return k})}
 function gate(list){
